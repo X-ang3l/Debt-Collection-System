@@ -144,9 +144,14 @@ class SistemaCobranca(ctk.CTk):
         self.entry_multa.pack(side="left", padx=(10, 0))
 
         self._create_input(scroll_form, "Valor Inicial da Dívida (R$):", "entry_valor", placeholder="Obrigatório", required=True)
-
         self.lbl_vencimento_auto = ctk.CTkLabel(scroll_form, text="💡 Vencimento: +30 dias (Automático)", text_color="#4CC9F0", font=ctk.CTkFont(size=11, slant="italic"), anchor="w")
         self.lbl_vencimento_auto.pack(fill="x", padx=20, pady=(10, 15))
+
+        # Campo Data de Cadastro (Opcional)
+        ctk.CTkLabel(scroll_form, text="Data de Cadastro (Opcional):", text_color="white").pack(fill="x", padx=20, pady=(5, 5))
+        self.entry_data_cadastro = DateEntry(scroll_form, date_pattern='dd/mm/yyyy', background='darkblue', foreground='white', borderwidth=2, height=30)
+        self.entry_data_cadastro.pack(fill="x", padx=20, pady=(0, 10))
+        self.entry_data_cadastro.set_date(date.today())
 
         self.btn_salvar = ctk.CTkButton(scroll_form, text="Cadastrar / Editar", command=self.salvar_cliente, fg_color="#3498db", height=40, font=ctk.CTkFont(size=14, weight="bold"))
         self.btn_salvar.pack(fill="x", padx=20, pady=10)
@@ -164,7 +169,8 @@ class SistemaCobranca(ctk.CTk):
         self.frame_direito = ctk.CTkFrame(self, corner_radius=10, fg_color="#1e1e1e")
         self.frame_direito.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
         self.frame_direito.grid_columnconfigure(0, weight=1)
-        self.frame_direito.grid_rowconfigure(3, weight=1)
+        # garantir que a linha 2 (onde fica a lista) expanda verticalmente
+        self.frame_direito.grid_rowconfigure(2, weight=1)
 
         frame_topo = ctk.CTkFrame(self.frame_direito, fg_color="transparent")
         frame_topo.grid(row=0, column=0, sticky="ew", padx=15, pady=15)
@@ -185,7 +191,7 @@ class SistemaCobranca(ctk.CTk):
         self.btn_filtrar_data.pack(side="left", padx=(0, 10))
 
         self.var_filtro_status = ctk.StringVar(value="Todos")
-        opcoes_filtro = ["Todos", "Vencidos", "Em dia"]
+        opcoes_filtro = ["Todos", "Vencidos", "Em dia", "Não Pagaram"]
         self.combo_filtro = ctk.CTkComboBox(frame_topo, variable=self.var_filtro_status, values=opcoes_filtro, width=130, height=35, command=lambda x: self.atualizar_visualizacao())
         self.combo_filtro.pack(side="left")
 
@@ -206,17 +212,18 @@ class SistemaCobranca(ctk.CTk):
         self.btn_quitados.grid(row=0, column=3, padx=10, pady=10, sticky="ew")
 
         self.scroll_frame = ctk.CTkScrollableFrame(self.frame_direito, label_text="Lista de Clientes", fg_color="transparent")
-        self.scroll_frame.grid(row=2, column=0, sticky="nsew", padx=15, pady=(0, 15))
+        # ocupar todo o espaço disponível sem padding inferior
+        self.scroll_frame.grid(row=2, column=0, sticky="nsew", padx=15, pady=(0, 0))
 
         self.lbl_total_divida = ctk.CTkLabel(self.scroll_frame, text="Total Geral: R$ 0,00", font=ctk.CTkFont(weight="bold", size=14), text_color="white")
         self.lbl_total_divida.pack(fill="x", padx=5, pady=(10, 5))
 
         self.lista_container = ctk.CTkFrame(self.scroll_frame, fg_color="transparent")
-        self.lista_container.pack(fill="both", expand=True, padx=5, pady=(0, 10))
+        self.lista_container.pack(fill="both", expand=True, padx=5, pady=(0, 0))
 
     def criar_tabelas(self):
         """Cria as tabelas necessárias no banco de dados."""
-        # Criar tabela clientes
+        # Criar tabela clientes (inclui data_cadastro e data_reagendamento)
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS clientes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -229,13 +236,27 @@ class SistemaCobranca(ctk.CTk):
                 data_vencimento TEXT,
                 taxa_juros REAL DEFAULT 0.0,
                 taxa_multa REAL DEFAULT 0.0,
+                data_cadastro TEXT,
+                data_reagendamento TEXT,
                 pagou_neste_periodo INTEGER DEFAULT 0
             )
         """)
         
-        # Adicionar coluna se não existir (para migração de dados antigos)
+        # Tentar adicionar colunas de migração se estiver atualizando versão antiga
         try:
             self.cursor.execute("ALTER TABLE clientes ADD COLUMN pagou_neste_periodo INTEGER DEFAULT 0")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Coluna já existe
+
+        try:
+            self.cursor.execute("ALTER TABLE clientes ADD COLUMN data_cadastro TEXT")
+            self.conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Coluna já existe
+
+        try:
+            self.cursor.execute("ALTER TABLE clientes ADD COLUMN data_reagendamento TEXT")
             self.conn.commit()
         except sqlite3.OperationalError:
             pass  # Coluna já existe
@@ -270,6 +291,11 @@ class SistemaCobranca(ctk.CTk):
         fields = ['entry_nome', 'entry_cpf', 'entry_rg', 'entry_endereco', 'entry_celular', 'entry_juros', 'entry_multa', 'entry_valor']
         for field in fields:
             getattr(self, field).delete(0, 'end')
+        # Reset data de cadastro para hoje
+        try:
+            self.entry_data_cadastro.set_date(date.today())
+        except Exception:
+            pass
         self.editando_id = None
         self.btn_salvar.configure(text="Cadastrar / Editar")
         self.btn_cancelar.configure(state="disabled")
@@ -313,17 +339,24 @@ class SistemaCobranca(ctk.CTk):
         # Normalização de CPF/RG para evitar erro com None
         cpf_db = cpf if cpf else None
         rg_db = rg if rg else None
-        data_vencimento = (date.today() + timedelta(days=30)).isoformat()
+        # Usar a data de cadastro informada para calcular vencimento (+30 dias)
+        try:
+            data_cadastro_dt = self.entry_data_cadastro.get_date() if hasattr(self, 'entry_data_cadastro') else date.today()
+        except Exception:
+            data_cadastro_dt = date.today()
+        data_vencimento = (data_cadastro_dt + timedelta(days=30)).isoformat()
 
         try:
             if self.editando_id:
                 # Atualização
+                # capturar data de cadastro
+                data_cadastro = self.entry_data_cadastro.get_date().isoformat() if hasattr(self, 'entry_data_cadastro') else None
                 self.cursor.execute("""
                     UPDATE clientes 
                     SET nome=?, cpf=?, rg=?, endereco=?, celular=?,
-                        divida=?, data_vencimento=?, taxa_juros=?, taxa_multa=?
+                        divida=?, data_vencimento=?, taxa_juros=?, taxa_multa=?, data_cadastro=?
                     WHERE id=?
-                """, (nome, cpf_db, rg_db, endereco, celular, divida, data_vencimento, juros, multa, self.editando_id))
+                """, (nome, cpf_db, rg_db, endereco, celular, divida, data_vencimento, juros, multa, data_cadastro, self.editando_id))
                 
                 self.cursor.execute("""
                     INSERT INTO historico (cliente_id, tipo, valor, novo_saldo, data_transacao, descricao) 
@@ -347,10 +380,12 @@ class SistemaCobranca(ctk.CTk):
                         messagebox.showerror("Erro", "RG já cadastrado!")
                         return
 
+                # capturar data de cadastro
+                data_cadastro = self.entry_data_cadastro.get_date().isoformat() if hasattr(self, 'entry_data_cadastro') else None
                 self.cursor.execute("""
-                    INSERT INTO clientes (nome, cpf, rg, endereco, celular, divida, data_vencimento, taxa_juros, taxa_multa, pagou_neste_periodo)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-                """, (nome, cpf_db, rg_db, endereco, celular, divida, data_vencimento, juros, multa))
+                    INSERT INTO clientes (nome, cpf, rg, endereco, celular, divida, data_vencimento, taxa_juros, taxa_multa, data_cadastro, pagou_neste_periodo)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                """, (nome, cpf_db, rg_db, endereco, celular, divida, data_vencimento, juros, multa, data_cadastro))
                 
                 novo_id = self.cursor.lastrowid
                 self.cursor.execute("""
@@ -387,7 +422,7 @@ class SistemaCobranca(ctk.CTk):
 
         # Construir Query Dinâmica
         query = """
-            SELECT id, nome, cpf, rg, endereco, celular, divida, data_vencimento, taxa_juros, taxa_multa, pagou_neste_periodo
+            SELECT id, nome, cpf, rg, endereco, celular, divida, data_vencimento, taxa_juros, taxa_multa, data_cadastro, data_reagendamento, pagou_neste_periodo
             FROM clientes 
             WHERE 1=1
         """
@@ -413,7 +448,7 @@ class SistemaCobranca(ctk.CTk):
         
         # Renovar dívidas vencidas
         for cliente in clientes:
-            c_id, c_nome, c_cpf, c_rg, c_end, c_cel, c_div, c_venc, c_juros, c_multa, c_pagou = cliente
+            c_id, c_nome, c_cpf, c_rg, c_end, c_cel, c_div, c_venc, c_juros, c_multa, c_cadastro, c_reagend, c_pagou = cliente
             if c_div > 0.001:  # Só renovar se houver dívida
                 venc_dt = date.fromisoformat(c_venc)
                 if venc_dt < hoje:
@@ -428,7 +463,7 @@ class SistemaCobranca(ctk.CTk):
         # Filtragem de Status e Quitados
         clientes_filtrados = []
         for cliente in clientes:
-            c_id, c_nome, c_cpf, c_rg, c_end, c_cel, c_div, c_venc, c_juros, c_multa, c_pagou = cliente
+            c_id, c_nome, c_cpf, c_rg, c_end, c_cel, c_div, c_venc, c_juros, c_multa, c_cadastro, c_reagend, c_pagou = cliente
             venc_dt = date.fromisoformat(c_venc)
             
             # Determinar status
@@ -454,6 +489,8 @@ class SistemaCobranca(ctk.CTk):
                 clientes_filtrados.append(cliente)
             elif status_filtro == "Em dia" and status_cliente == "em_dia":
                 clientes_filtrados.append(cliente)
+            elif status_filtro == "Não Pagaram" and (not c_pagou) and c_div > 0.001:
+                clientes_filtrados.append(cliente)
 
         # Ordenação: Por Endereço (se vazio, usa Nome), depois por Nome
         clientes_filtrados.sort(key=lambda x: (
@@ -464,7 +501,7 @@ class SistemaCobranca(ctk.CTk):
         total_divida = 0.0
         
         for cliente in clientes_filtrados:
-            c_id, c_nome, c_cpf, c_rg, c_end, c_cel, c_div, c_venc, c_juros, c_multa, c_pagou = cliente
+            c_id, c_nome, c_cpf, c_rg, c_end, c_cel, c_div, c_venc, c_juros, c_multa, c_cadastro, c_reagend, c_pagou = cliente
             
             # Cálculo de Juros/Multa se vencido
             valor_exibicao = c_div
@@ -519,6 +556,14 @@ class SistemaCobranca(ctk.CTk):
                                   text_color="#aaaaaa", anchor="w")
             lbl_end.pack(anchor="w")
 
+            # Data de vencimento
+            data_venc_display = c_venc
+            if c_reagend:
+                data_venc_display = f"Re-agendado: {c_reagend}"
+            lbl_venc = ctk.CTkLabel(lbl_info, text=f"Vencimento: {data_venc_display}", font=ctk.CTkFont(size=9), 
+                                  text_color="#ffb347", anchor="w")
+            lbl_venc.pack(anchor="w")
+
             if c_cpf:
                 lbl_cpf = ctk.CTkLabel(lbl_info, text=f"CPF: {c_cpf}", font=ctk.CTkFont(size=10), 
                                       text_color="#888888", anchor="w")
@@ -558,6 +603,12 @@ class SistemaCobranca(ctk.CTk):
                                    command=lambda id=c_id: self.excluir_cliente(id))
             btn_del.pack(side="left", padx=2)
 
+            btn_reagend = ctk.CTkButton(btn_frame, text="Re-agendar", width=80, height=30,
+                                       font=ctk.CTkFont(size=10),
+                                       fg_color="#9b59b6", hover_color="#8e44ad",
+                                       command=lambda id=c_id, nome=c_nome: self.reagendar_cliente(id, nome))
+            btn_reagend.pack(side="left", padx=2)
+
         # Atualizar total
         total_text = f"Total na Lista: R$ {total_divida:.2f}"
         if self.mostrando_quitados:
@@ -570,8 +621,8 @@ class SistemaCobranca(ctk.CTk):
             self.cursor.execute("SELECT * FROM clientes WHERE id=?", (client_id,))
             row = self.cursor.fetchone()
             if row:
-                # Desempacotamento correto da tupla
-                # id(0), nome(1), cpf(2), rg(3), endereco(4), celular(5), divida(6), data_vencimento(7), juros(8), multa(9), pagou(10)
+                    # Desempacotamento correto da tupla
+                    # id(0), nome(1), cpf(2), rg(3), endereco(4), celular(5), divida(6), data_vencimento(7), juros(8), multa(9), data_cadastro(10), pagou(11)
                 self.editando_id = row[0]
                 
                 self.entry_nome.delete(0, 'end')
@@ -597,6 +648,18 @@ class SistemaCobranca(ctk.CTk):
                 
                 self.entry_valor.delete(0, 'end')
                 self.entry_valor.insert(0, f"{row[6]:.2f}")
+
+                # Preencher data de cadastro se existir
+                try:
+                    if row[10]:
+                        try:
+                            self.entry_data_cadastro.set_date(date.fromisoformat(row[10]))
+                        except Exception:
+                            self.entry_data_cadastro.set_date(date.today())
+                    else:
+                        self.entry_data_cadastro.set_date(date.today())
+                except Exception:
+                    pass
 
                 self.btn_salvar.configure(text="Atualizar Cliente")
                 self.btn_cancelar.configure(state="normal")
@@ -649,11 +712,11 @@ class SistemaCobranca(ctk.CTk):
                     if not confirm:
                         return
 
-                # Atualizar Banco e marcar como pagou neste período
+                # Atualizar Banco e marcar como pagou neste período, limpar reagendamento
                 if novo_saldo < divida_atual:  # Se houve redução na dívida
-                    self.cursor.execute("UPDATE clientes SET divida=?, pagou_neste_periodo=1 WHERE id=?", (max(0, novo_saldo), client_id))
+                    self.cursor.execute("UPDATE clientes SET divida=?, pagou_neste_periodo=1, data_reagendamento=NULL WHERE id=?", (max(0, novo_saldo), client_id))
                 else:
-                    self.cursor.execute("UPDATE clientes SET divida=? WHERE id=?", (max(0, novo_saldo), client_id))
+                    self.cursor.execute("UPDATE clientes SET divida=?, data_reagendamento=NULL WHERE id=?", (max(0, novo_saldo), client_id))
                 
                 # Registrar no Histórico
                 self.cursor.execute("""
@@ -704,14 +767,52 @@ class SistemaCobranca(ctk.CTk):
                 messagebox.showerror("Erro", f"Não foi possível excluir: {e}")
                 print(f"Debug: {e}")
 
+    def reagendar_cliente(self, client_id, nome_cliente):
+        """Re-agenda um cliente para uma data futura."""
+        dialog = Toplevel(self)
+        dialog.title(f"Re-agendar: {nome_cliente}")
+        dialog.geometry("350x150")
+        dialog.resizable(False, False)
+        
+        ctk.CTkLabel(dialog, text="Data de Re-agendamento:", font=ctk.CTkFont(size=12)).pack(pady=10)
+        cal_reagend = DateEntry(dialog, date_pattern='dd/mm/yyyy', background='darkblue', foreground='white', borderwidth=2, height=30)
+        cal_reagend.pack(pady=10)
+        cal_reagend.set_date(date.today())
+
+        def confirmar_reagendamento():
+            try:
+                data_reagend = cal_reagend.get_date().isoformat()
+                self.cursor.execute("UPDATE clientes SET data_reagendamento=? WHERE id=?", (data_reagend, client_id))
+                self.conn.commit()
+                messagebox.showinfo("Sucesso", f"Cliente re-agendado para {cal_reagend.get_date().strftime('%d/%m/%Y')}")
+                dialog.destroy()
+                self.atualizar_visualizacao()
+            except Exception as e:
+                messagebox.showerror("Erro", f"Erro ao re-agendar: {e}")
+
+        ctk.CTkButton(dialog, text="Confirmar", command=confirmar_reagendamento).pack(pady=10)
+
     def gerar_ficha_coleta(self):
         """Gera um relatório em PDF com os clientes em cobração."""
+        hoje = date.today().isoformat()
         self.cursor.execute("""
-            SELECT id, nome, cpf, endereco, celular, divida, data_vencimento, taxa_juros, taxa_multa
-            FROM clientes WHERE divida > 0.001
+            SELECT id, nome, cpf, endereco, celular, divida, data_vencimento, taxa_juros, taxa_multa, data_reagendamento
+            FROM clientes WHERE divida > 0.001 AND pagou_neste_periodo = 0
             ORDER BY endereco, nome
         """)
-        clientes = self.cursor.fetchall()
+        clientes_bruto = self.cursor.fetchall()
+        
+        # Filtrar: incluir apenas se data_reagendamento é hoje ou se não há reagendamento
+        clientes = []
+        for cliente in clientes_bruto:
+            c_id, c_nome, c_cpf, c_end, c_cel, c_div, c_venc, c_juros, c_multa, c_reagend = cliente
+            if c_reagend:
+                # Se tem reagendamento, incluir só se for hoje
+                if c_reagend == hoje:
+                    clientes.append((c_id, c_nome, c_cpf, c_end, c_cel, c_div, c_venc, c_juros, c_multa, c_reagend))
+            else:
+                # Se não tem reagendamento, incluir normalmente
+                clientes.append((c_id, c_nome, c_cpf, c_end, c_cel, c_div, c_venc, c_juros, c_multa, c_reagend))
 
         if not clientes:
             messagebox.showinfo("Aviso", "Nenhum cliente em aberto para gerar ficha.")
@@ -743,11 +844,14 @@ class SistemaCobranca(ctk.CTk):
             total_divida = 0
 
             for idx, cliente in enumerate(clientes, 1):
-                c_id, c_nome, c_cpf, c_end, c_cel, c_div, c_venc, c_juros, c_multa = cliente
+                c_id, c_nome, c_cpf, c_end, c_cel, c_div, c_venc, c_juros, c_multa, c_reagend = cliente
+                
+                # Usar data_reagendamento se existir, senão usar data_vencimento
+                data_usar = c_reagend if c_reagend else c_venc
                 
                 # Calcular multa/juros se vencido
                 valor_total = c_div
-                venc_dt = date.fromisoformat(c_venc)
+                venc_dt = date.fromisoformat(data_usar)
                 if venc_dt < date.today():
                     dias_atraso = (date.today() - venc_dt).days
                     juros_val = c_div * (c_juros / 100) * (dias_atraso / 30)
@@ -775,7 +879,7 @@ class SistemaCobranca(ctk.CTk):
                     c.drawString(1.5*cm, y, f"Telefone: {c_cel}")
                     y -= 0.3*cm
                 
-                c.drawString(1.5*cm, y, f"Valor: R$ {valor_total:.2f} | Vencimento: {c_venc}")
+                c.drawString(1.5*cm, y, f"Valor: R$ {valor_total:.2f} | Vencimento: {data_usar}")
                 y -= 0.5*cm
 
                 # Quebra de página se necessário
