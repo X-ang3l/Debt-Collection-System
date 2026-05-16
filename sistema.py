@@ -966,7 +966,9 @@ class SistemaCobranca(ctk.CTk):
         dialog.title("Histórico de Cliente")
         dialog.geometry("400x300")
 
-        ctk.CTkLabel(dialog, text="Selecione um cliente:", font=ctk.CTkFont(size=12)).pack(pady=10)
+        ctk.CTkLabel(dialog, text="Buscar cliente por nome:", font=ctk.CTkFont(size=12)).pack(pady=(10, 0))
+        entry_historico_busca = ctk.CTkEntry(dialog, width=350)
+        entry_historico_busca.pack(pady=(5, 10), padx=20)
 
         # Buscar clientes
         self.cursor.execute("SELECT id, nome FROM clientes ORDER BY nome")
@@ -980,6 +982,17 @@ class SistemaCobranca(ctk.CTk):
         cliente_map = {f"{c[1]} (ID: {c[0]})": c[0] for c in clientes_list}
         combo_clientes = ctk.CTkComboBox(dialog, values=list(cliente_map.keys()), width=350)
         combo_clientes.pack(pady=10, padx=20)
+
+        def filtrar_clientes():
+            termo = entry_historico_busca.get().strip().lower()
+            valores = [nome for nome in cliente_map.keys() if termo in nome.lower()]
+            if not valores:
+                messagebox.showwarning("Aviso", "Nenhum cliente encontrado para este nome.")
+                return
+            combo_clientes.configure(values=valores)
+            combo_clientes.set(valores[0])
+
+        ctk.CTkButton(dialog, text="Buscar", command=filtrar_clientes, width=120).pack(pady=(0, 10))
 
         def mostrar_transacoes():
             sel = combo_clientes.get()
