@@ -40,6 +40,46 @@ def validar_cpf(cpf: str) -> bool:
     return True
 
 
+def format_brl(value: float) -> str:
+    """Formata valores em reais com ponto de milhares e vírgula decimal."""
+    if value is None:
+        return "0,00"
+    formatted = f"{value:,.2f}"
+    return formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def parse_brl_number(value: str) -> float:
+    """Converte texto brasileiro para float, aceitando 1.234,56 ou 1234.56."""
+    if value is None:
+        return 0.0
+    text = str(value).strip().replace("R$", "").replace(" ", "")
+    text = text.replace(".", "").replace(",", ".")
+    return float(text) if text else 0.0
+
+
+def format_date_display(date_str: str) -> str:
+    """Converte data ISO para formato brasileiro dd/mm/yyyy."""
+    if not date_str:
+        return ""
+    try:
+        return date.fromisoformat(date_str).strftime('%d/%m/%Y')
+    except Exception:
+        return date_str
+
+
+def next_month_same_day(date_obj: date) -> date:
+    """Retorna a mesma data no próximo mês, ajustando para o último dia se necessário."""
+    year = date_obj.year + (date_obj.month // 12)
+    month = date_obj.month % 12 + 1
+    day = date_obj.day
+    while day > 0:
+        try:
+            return date(year, month, day)
+        except ValueError:
+            day -= 1
+    return date(year, month, 1)
+
+
 class LoginWindow(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -144,8 +184,10 @@ class SistemaCobranca(ctk.CTk):
         self.entry_multa.pack(side="left", padx=(10, 0))
 
         self._create_input(scroll_form, "Valor Inicial da Dívida (R$):", "entry_valor", placeholder="Obrigatório", required=True)
-        self.lbl_vencimento_auto = ctk.CTkLabel(scroll_form, text="💡 Vencimento: +30 dias (Automático)", text_color="#4CC9F0", font=ctk.CTkFont(size=11, slant="italic"), anchor="w")
-        self.lbl_vencimento_auto.pack(fill="x", padx=20, pady=(10, 15))
+        ctk.CTkLabel(scroll_form, text="Data de Vencimento:", text_color="white").pack(fill="x", padx=20, pady=(10, 5))
+        self.entry_data_vencimento = DateEntry(scroll_form, date_pattern='dd/mm/yyyy', background='darkblue', foreground='white', borderwidth=2, height=30)
+        self.entry_data_vencimento.pack(fill="x", padx=20, pady=(0, 10))
+        self.entry_data_vencimento.set_date(date.today())
 
         # Campo Data de Cadastro (Opcional)
         ctk.CTkLabel(scroll_form, text="Data de Cadastro (Opcional):", text_color="white").pack(fill="x", padx=20, pady=(5, 5))
@@ -291,9 +333,13 @@ class SistemaCobranca(ctk.CTk):
         fields = ['entry_nome', 'entry_cpf', 'entry_rg', 'entry_endereco', 'entry_celular', 'entry_juros', 'entry_multa', 'entry_valor']
         for field in fields:
             getattr(self, field).delete(0, 'end')
-        # Reset data de cadastro para hoje
+        # Reset datas para hoje
         try:
             self.entry_data_cadastro.set_date(date.today())
+        except Exception:
+            pass
+        try:
+            self.entry_data_vencimento.set_date(date.today())
         except Exception:
             pass
         self.editando_id = None
@@ -309,9 +355,9 @@ class SistemaCobranca(ctk.CTk):
         celular = self.entry_celular.get().strip()
         
         try:
-            juros = float(self.entry_juros.get() or 0)
-            multa = float(self.entry_multa.get() or 0)
-            divida = float(self.entry_valor.get().replace(',', '.') or 0)
+            juros = parse_brl_number(self.entry_juros.get() or "0")
+            multa = parse_brl_number(self.entry_multa.get() or "0")
+            divida = parse_brl_number(self.entry_valor.get() or "0")
         except ValueError:
             messagebox.showerror("Erro", "Verifique os valores numéricos (juros, multa e dívida).")
             return
@@ -322,6 +368,9 @@ class SistemaCobranca(ctk.CTk):
             return
         if divida < 0:
             messagebox.showwarning("Atenção", "Valor da dívida não pode ser negativo.")
+            return
+        if not hasattr(self, 'entry_data_vencimento'):
+            messagebox.showwarning("Atenção", "Data de vencimento é obrigatória.")
             return
 
         if cpf and not validar_cpf(cpf):
@@ -339,12 +388,10 @@ class SistemaCobranca(ctk.CTk):
         # Normalização de CPF/RG para evitar erro com None
         cpf_db = cpf if cpf else None
         rg_db = rg if rg else None
-        # Usar a data de cadastro informada para calcular vencimento (+30 dias)
         try:
-            data_cadastro_dt = self.entry_data_cadastro.get_date() if hasattr(self, 'entry_data_cadastro') else date.today()
+            data_vencimento = self.entry_data_vencimento.get_date().isoformat()
         except Exception:
-            data_cadastro_dt = date.today()
-        data_vencimento = (data_cadastro_dt + timedelta(days=30)).isoformat()
+            data_vencimento = date.today().isoformat()
 
         try:
             if self.editando_id:
@@ -362,7 +409,7 @@ class SistemaCobranca(ctk.CTk):
                     INSERT INTO historico (cliente_id, tipo, valor, novo_saldo, data_transacao, descricao) 
                     VALUES (?, 'Edição', 0, ?, ?, ?)
                 """, (self.editando_id, divida, datetime.now().strftime('%Y-%m-%d %H:%M'), 
-                      f"Dados atualizados - Saldo: R$ {divida:.2f}"))
+                      f"Dados atualizados - Saldo: R$ {format_brl(divida)}"))
                 
                 msg_sucesso = "Cliente atualizado com sucesso!"
                 self.editando_id = None
@@ -392,7 +439,7 @@ class SistemaCobranca(ctk.CTk):
                     INSERT INTO historico (cliente_id, tipo, valor, novo_saldo, data_transacao, descricao) 
                     VALUES (?, 'Cadastro Inicial', ?, ?, ?, ?)
                 """, (novo_id, divida, divida, datetime.now().strftime('%Y-%m-%d %H:%M'), 
-                      f"Cliente registrado com dívida inicial de R$ {divida:.2f}"))
+                      f"Cliente registrado com dívida inicial de R$ {format_brl(divida)}"))
                 
                 msg_sucesso = "Cliente cadastrado com sucesso!"
 
@@ -445,21 +492,28 @@ class SistemaCobranca(ctk.CTk):
             return
 
         hoje = date.today()
-        
-        # Renovar dívidas vencidas
-        for cliente in clientes:
-            c_id, c_nome, c_cpf, c_rg, c_end, c_cel, c_div, c_venc, c_juros, c_multa, c_cadastro, c_reagend, c_pagou = cliente
-            if c_div > 0.001:  # Só renovar se houver dívida
-                venc_dt = date.fromisoformat(c_venc)
-                if venc_dt < hoje:
-                    # Renovar para +30 dias
-                    nova_data_venc = venc_dt + timedelta(days=30)
-                    self.cursor.execute(
-                        "UPDATE clientes SET data_vencimento=?, pagou_neste_periodo=0 WHERE id=?",
-                        (nova_data_venc.isoformat(), c_id)
-                    )
-                    self.conn.commit()
-        
+
+        # Rolar vencimento para o mês seguinte apenas se o cliente pagou neste período
+        try:
+            self.cursor.execute(
+                "SELECT id, data_vencimento FROM clientes WHERE divida > 0.001 AND pagou_neste_periodo = 1"
+            )
+            clientes_para_rolar = self.cursor.fetchall()
+            for cid, venc in clientes_para_rolar:
+                try:
+                    venc_dt = date.fromisoformat(venc)
+                    if venc_dt < hoje:
+                        nova_data_venc = next_month_same_day(venc_dt)
+                        self.cursor.execute(
+                            "UPDATE clientes SET data_vencimento=?, pagou_neste_periodo=0 WHERE id=?",
+                            (nova_data_venc.isoformat(), cid)
+                        )
+                except Exception:
+                    pass
+            self.conn.commit()
+        except sqlite3.Error:
+            pass
+
         # Filtragem de Status e Quitados
         clientes_filtrados = []
         for cliente in clientes:
@@ -557,9 +611,9 @@ class SistemaCobranca(ctk.CTk):
             lbl_end.pack(anchor="w")
 
             # Data de vencimento
-            data_venc_display = c_venc
+            data_venc_display = format_date_display(c_venc)
             if c_reagend:
-                data_venc_display = f"Re-agendado: {c_reagend}"
+                data_venc_display = f"Re-agendado: {format_date_display(c_reagend)}"
             lbl_venc = ctk.CTkLabel(lbl_info, text=f"Vencimento: {data_venc_display}", font=ctk.CTkFont(size=9), 
                                   text_color="#ffb347", anchor="w")
             lbl_venc.pack(anchor="w")
@@ -577,7 +631,7 @@ class SistemaCobranca(ctk.CTk):
                                      font=ctk.CTkFont(size=10, weight="bold"), text_color=cor_status)
             lbl_status.pack(anchor="e")
 
-            lbl_valor = ctk.CTkLabel(lbl_valor_frame, text=f"R$ {valor_exibicao:.2f}", 
+            lbl_valor = ctk.CTkLabel(lbl_valor_frame, text=f"R$ {format_brl(valor_exibicao)}", 
                                     font=ctk.CTkFont(size=16, weight="bold"), text_color=cor_divida)
             lbl_valor.pack(anchor="e")
 
@@ -610,7 +664,7 @@ class SistemaCobranca(ctk.CTk):
             btn_reagend.pack(side="left", padx=2)
 
         # Atualizar total
-        total_text = f"Total na Lista: R$ {total_divida:.2f}"
+        total_text = f"Total na Lista: R$ {format_brl(total_divida)}"
         if self.mostrando_quitados:
             total_text += " (Quitados)"
         self.lbl_total_divida.configure(text=total_text)
@@ -647,7 +701,19 @@ class SistemaCobranca(ctk.CTk):
                 self.entry_multa.insert(0, str(row[9] or 0))
                 
                 self.entry_valor.delete(0, 'end')
-                self.entry_valor.insert(0, f"{row[6]:.2f}")
+                self.entry_valor.insert(0, format_brl(row[6]))
+
+                # Preencher data de vencimento se existir
+                try:
+                    if row[7]:
+                        try:
+                            self.entry_data_vencimento.set_date(date.fromisoformat(row[7]))
+                        except Exception:
+                            self.entry_data_vencimento.set_date(date.today())
+                    else:
+                        self.entry_data_vencimento.set_date(date.today())
+                except Exception:
+                    pass
 
                 # Preencher data de cadastro se existir
                 try:
@@ -682,13 +748,7 @@ class SistemaCobranca(ctk.CTk):
 
         def confirmar_pagamento():
             try:
-                valor_pago_str = entry_pago.get().replace(',', '.')
-                if not valor_pago_str:
-                    messagebox.showwarning("Aviso", "Digite um valor.")
-                    return
-                
-                valor_pago = float(valor_pago_str)
-                
+                valor_pago = parse_brl_number(entry_pago.get())
                 if valor_pago <= 0:
                     messagebox.showwarning("Aviso", "O valor deve ser maior que zero.")
                     return
@@ -707,8 +767,8 @@ class SistemaCobranca(ctk.CTk):
 
                 if novo_saldo < 0:
                     confirm = messagebox.askyesno("Saldo Negativo", 
-                        f"O pagamento excede a dívida.\nDívida: R$ {divida_atual:.2f}\nPago: R$ {valor_pago:.2f}\n"
-                        f"Isso criará um saldo de R$ {novo_saldo:.2f}. Deseja prosseguir?")
+                        f"O pagamento excede a dívida.\nDívida: R$ {format_brl(divida_atual)}\nPago: R$ {format_brl(valor_pago)}\n"
+                        f"Isso criará um saldo de R$ {format_brl(novo_saldo)}. Deseja prosseguir?")
                     if not confirm:
                         return
 
@@ -723,13 +783,13 @@ class SistemaCobranca(ctk.CTk):
                     INSERT INTO historico (cliente_id, tipo, valor, novo_saldo, data_transacao, descricao)
                     VALUES (?, 'Pagamento', ?, ?, ?, ?)
                 """, (client_id, valor_pago, max(0, novo_saldo), datetime.now().strftime('%Y-%m-%d %H:%M'), 
-                      f"Pagamento de R$ {valor_pago:.2f}"))
+                      f"Pagamento de R$ {format_brl(valor_pago)}"))
                 
                 self.conn.commit()
                 
-                status_msg = f"Pagamento de R$ {valor_pago:.2f} aplicado com sucesso!\nNovo saldo: R$ {max(0, novo_saldo):.2f}"
+                status_msg = f"Pagamento de R$ {format_brl(valor_pago)} aplicado com sucesso!\nNovo saldo: R$ {format_brl(max(0, novo_saldo))}"
                 if novo_saldo < 0:
-                    status_msg += f"\n⚠️ Crédito de R$ {abs(novo_saldo):.2f}"
+                    status_msg += f"\n⚠️ Crédito de R$ {format_brl(abs(novo_saldo))}"
                     
                 messagebox.showinfo("Sucesso", status_msg)
                 dialog.destroy()
@@ -879,7 +939,7 @@ class SistemaCobranca(ctk.CTk):
                     c.drawString(1.5*cm, y, f"Telefone: {c_cel}")
                     y -= 0.3*cm
                 
-                c.drawString(1.5*cm, y, f"Valor: R$ {valor_total:.2f} | Vencimento: {data_usar}")
+                c.drawString(1.5*cm, y, f"Valor: R$ {format_brl(valor_total)} | Vencimento: {format_date_display(data_usar)}")
                 y -= 0.5*cm
 
                 # Quebra de página se necessário
@@ -890,7 +950,7 @@ class SistemaCobranca(ctk.CTk):
             # Rodapé com total
             c.line(cm, y - 0.2*cm, width - cm, y - 0.2*cm)
             c.setFont("Helvetica-Bold", 11)
-            c.drawString(cm, y - 0.6*cm, f"TOTAL A COBRAR: R$ {total_divida:.2f}")
+            c.drawString(cm, y - 0.6*cm, f"TOTAL A COBRAR: R$ {format_brl(total_divida)}")
 
             c.save()
             messagebox.showinfo("Sucesso", f"Ficha de cobração gerada em:\n{file_path}")
@@ -967,8 +1027,8 @@ class SistemaCobranca(ctk.CTk):
 
                 ctk.CTkLabel(row, text=data, width=100).pack(side="left", padx=10)
                 ctk.CTkLabel(row, text=tipo, width=100).pack(side="left", padx=10)
-                ctk.CTkLabel(row, text=f"R$ {valor:.2f}", width=80).pack(side="left", padx=10)
-                ctk.CTkLabel(row, text=f"R$ {saldo:.2f}", width=80).pack(side="left", padx=10)
+                ctk.CTkLabel(row, text=f"R$ {format_brl(valor)}", width=80).pack(side="left", padx=10)
+                ctk.CTkLabel(row, text=f"R$ {format_brl(saldo)}", width=80).pack(side="left", padx=10)
 
         ctk.CTkButton(dialog, text="Visualizar Histórico", command=mostrar_transacoes).pack(pady=20)
 
@@ -1062,7 +1122,7 @@ class SistemaCobranca(ctk.CTk):
                 status_text = "✅ Paga" if paga else "❌ Pendente"
 
                 ctk.CTkLabel(info_frame, text=nome_conta, font=ctk.CTkFont(size=13, weight="bold"), text_color="white").pack(anchor="w")
-                ctk.CTkLabel(info_frame, text=f"Vencimento: {data_venc} | Status: {status_text}", font=ctk.CTkFont(size=10), text_color=cor_status).pack(anchor="w")
+                ctk.CTkLabel(info_frame, text=f"Vencimento: {format_date_display(data_venc)} | Status: {status_text}", font=ctk.CTkFont(size=10), text_color=cor_status).pack(anchor="w")
 
                 # Botões
                 btn_frame = ctk.CTkFrame(frame_conta, fg_color="transparent")
